@@ -206,7 +206,7 @@
     .right-panel {
       padding: 28px;
       display: grid;
-      grid-template-rows: auto auto 1fr auto;
+      grid-template-rows: auto auto auto 1fr auto;
       gap: 20px;
     }
 
@@ -364,6 +364,49 @@
       font-size: 0.82rem;
     }
 
+    .insights-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .insight-card {
+      padding: 20px;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.1);
+      min-height: 122px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: transform 0.25s ease, background 0.25s ease;
+    }
+
+    .insight-card:hover {
+      transform: translateY(-4px);
+      background: rgba(255,255,255,0.11);
+    }
+
+    .insight-card span {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 10px;
+      display: block;
+    }
+
+    .insight-card strong {
+      font-size: 1.2rem;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+
+    .insight-card small {
+      color: rgba(255,255,255,0.58);
+      margin-top: 8px;
+      font-size: 0.8rem;
+      line-height: 1.5;
+    }
+
     .bottom-row {
       display: grid;
       grid-template-columns: 1.25fr 0.95fr;
@@ -475,7 +518,8 @@
         grid-template-columns: 1fr;
       }
 
-      .stats-grid {
+      .stats-grid,
+      .insights-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
@@ -520,7 +564,8 @@
     @media (max-width: 480px) {
       .stats-grid,
       .forecast-list,
-      .time-box {
+      .time-box,
+      .insights-grid {
         grid-template-columns: 1fr;
       }
     }
@@ -619,6 +664,29 @@
         </div>
       </section>
 
+      <section class="insights-grid">
+        <div class="insight-card">
+          <span>Chance of Rain Today</span>
+          <strong id="rainChance">--%</strong>
+          <small id="rainSummary">Rain possibility is being calculated.</small>
+        </div>
+        <div class="insight-card">
+          <span>Sunrise</span>
+          <strong id="sunriseTime">--:--</strong>
+          <small>Start of daylight in this city</small>
+        </div>
+        <div class="insight-card">
+          <span>Sunset</span>
+          <strong id="sunsetTime">--:--</strong>
+          <small>Golden hour begins before this time</small>
+        </div>
+        <div class="insight-card">
+          <span>Best Time to Watch Sky</span>
+          <strong id="bestSkyTime">Calculating...</strong>
+          <small id="bestSkyNote">Looking for the clearest hour today.</small>
+        </div>
+      </section>
+
       <section class="bottom-row">
         <div class="forecast-box">
           <div class="section-title">
@@ -645,7 +713,7 @@
                 <p>Cloud Cover</p>
                 <strong id="cloud">--%</strong>
               </div>
-              <span>Sky condition</span>
+              <span id="cloudLabel">Sky condition</span>
             </div>
             <div class="highlight">
               <div>
@@ -746,7 +814,7 @@
       card.classList.add("loading");
 
       try {
-        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,pressure_msl,visibility,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max&timezone=auto&forecast_days=5`;
+        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,pressure_msl,visibility,wind_speed_10m&hourly=precipitation_probability,cloud_cover,visibility,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max,precipitation_probability_max,sunrise,sunset&timezone=auto&forecast_days=5`;
         const response = await fetch(weatherUrl);
         const data = await response.json();
 
@@ -762,10 +830,81 @@
       }
     }
 
+    function formatTime(dateTimeString) {
+      if (!dateTimeString) return "--:--";
+      return new Date(dateTimeString).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+    }
+
+    function getCloudLabel(cloudCover, visibilityKm) {
+      if (cloudCover <= 20 && visibilityKm >= 10) return "Excellent sky view";
+      if (cloudCover <= 40 && visibilityKm >= 8) return "Very good sky view";
+      if (cloudCover <= 65 && visibilityKm >= 5) return "Moderate sky view";
+      return "Low sky visibility";
+    }
+
+    function getRainSummary(rainChance) {
+      if (rainChance <= 15) return "Very low chance of rain today.";
+      if (rainChance <= 40) return "There may be a brief shower today.";
+      if (rainChance <= 70) return "Rain is fairly possible today.";
+      return "High possibility of rain today.";
+    }
+
+    function calculateBestSkyTime(hourly, timezone) {
+      if (!hourly || !hourly.time?.length) {
+        return { time: "Not available", note: "Hourly sky data is unavailable." };
+      }
+
+      let bestIndex = -1;
+      let bestScore = -Infinity;
+
+      hourly.time.forEach((time, index) => {
+        const hour = new Date(time).getHours();
+        const isDay = hourly.is_day?.[index] === 1;
+        const cloud = hourly.cloud_cover?.[index] ?? 100;
+        const visibilityKm = ((hourly.visibility?.[index] ?? 0) / 1000);
+        const rain = hourly.precipitation_probability?.[index] ?? 100;
+
+        const preferredHourBonus = hour >= 17 && hour <= 19 ? 12 : hour >= 5 && hour <= 7 ? 8 : 0;
+        const dayBonus = isDay ? 10 : 0;
+        const score = (visibilityKm * 4) - (cloud * 0.45) - (rain * 0.35) + preferredHourBonus + dayBonus;
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = index;
+        }
+      });
+
+      if (bestIndex === -1) {
+        return { time: "Not available", note: "Could not determine the best sky time." };
+      }
+
+      const bestTime = new Date(hourly.time[bestIndex]).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+      const cloud = hourly.cloud_cover?.[bestIndex] ?? 0;
+      const visibilityKm = ((hourly.visibility?.[bestIndex] ?? 0) / 1000).toFixed(1);
+      const rain = hourly.precipitation_probability?.[bestIndex] ?? 0;
+
+      return {
+        time: bestTime,
+        note: `Cloud ${cloud}% · Rain ${rain}% · Visibility ${visibilityKm} km`
+      };
+    }
+
     function updateUI(data, placeName, region, country) {
       const current = data.current;
       const daily = data.daily;
+      const hourly = data.hourly;
       const weatherInfo = weatherCodeMap[current.weather_code] || { text: "Unknown Weather", icon: "https://ssl.gstatic.com/onebox/weather/64/partly_cloudy.png" };
+      const visibilityKm = (current.visibility / 1000).toFixed(1);
+      const todayRainChance = daily.precipitation_probability_max?.[0] ?? 0;
+      const sunrise = daily.sunrise?.[0];
+      const sunset = daily.sunset?.[0];
+      const bestSky = calculateBestSkyTime(hourly, data.timezone);
 
       document.getElementById("region").textContent = `${region ? region + ', ' : ''}${country || 'Live Weather Data'}`;
       document.getElementById("cityName").textContent = placeName;
@@ -775,9 +914,16 @@
       document.getElementById("humidity").textContent = `${current.relative_humidity_2m}%`;
       document.getElementById("windSpeed").textContent = `${current.wind_speed_10m} km/h`;
       document.getElementById("pressure").textContent = `${Math.round(current.pressure_msl)} mb`;
-      document.getElementById("visibility").textContent = `${(current.visibility / 1000).toFixed(1)} km`;
+      document.getElementById("visibility").textContent = `${visibilityKm} km`;
       document.getElementById("cloud").textContent = `${current.cloud_cover}%`;
+      document.getElementById("cloudLabel").textContent = getCloudLabel(current.cloud_cover, Number(visibilityKm));
       document.getElementById("uv").textContent = daily.uv_index_max?.[0] ?? "--";
+      document.getElementById("rainChance").textContent = `${todayRainChance}%`;
+      document.getElementById("rainSummary").textContent = getRainSummary(todayRainChance);
+      document.getElementById("sunriseTime").textContent = formatTime(sunrise);
+      document.getElementById("sunsetTime").textContent = formatTime(sunset);
+      document.getElementById("bestSkyTime").textContent = bestSky.time;
+      document.getElementById("bestSkyNote").textContent = bestSky.note;
 
       const localNow = new Date().toLocaleTimeString([], {
         hour: "2-digit",
